@@ -1,15 +1,18 @@
 package projectLearn;
 import java.io.*;
 import java.net.*;
+import java.lang.Math;
 import java.util.BitSet;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/*Protcol codes( first integer of the packet.)
-*	Value		Format			Type
-* 		0 		-				-
-*		1 		[fi				request of file 
+/*Protcol codes( first integer of the packet.) [code , info]
+*	Value		Format(info)						Type
+* 		0 		-									-
+*		1 		[file id,seq. no.]					request of file data packet
+*		2		[file id,seq. no.,data]				to send data packet.
+*		3		[file id]							stop file id.					
 */
 
 public class FileSender{
@@ -20,49 +23,46 @@ public class FileSender{
 	private int filesize;			//	size of file to send.
 	private SocketAddress remote;	//	remote address to send file with.
 	
-	private BitSet acknowledged; 	//	set of indexes of acknowledged packets.
-	private Queue<Integer> toSend;		//	Queue to store indexes of packets to send.
 	private RandomAccessFile file;	//	file to be transfered.
 	
-	private ReentrantReadWriteLock lock;	// lock to syncronize between thread.
+	final public int PACKET_REQUEST = 1;
+	final public int DATA_PACKET = 2;
+	final public int STOP = 3;
 	
 	/**Constructor
 	*@param DatagramSocket	soc		socket for host.
 	*@param SocketAddress	rem		socket address of remote device.
 	*@param String			fname	name of file to send.
-	*@param int				fid 	hash of name of file to send.
+	*@param int				fid 	id of file to send.
 	*@param int				fsize	size of file to send.
 	*/
-	FileSender(DatagramSocket soc,SocketAddress rem,String fname,int fid,int fsize)	throws FileNotFoundException{
+	FileSender(DatagramSocket soc,SocketAddress rem,String fname,int fid)	throws FileNotFoundException,IOException{
 		socket = soc;
 		remote = rem;
 		filename = fname;
 		fileid = fid;
-		filesize = fsize;
 		
 		
 		packetsize = 8000;//Approx 8KB data in 1 packet.
-		acknowledged = new BitSet(filesize);
-		toSend = new LinkedList<Integer>();
 		file = new RandomAccessFile(filename,"r");
-		
-		for(int i = 0;i<filesize/packetsize;i++)
-			toSend.add(i);
+		filesize = (int)file.length();
+		System.out.println("filesize:" +filesize);
 	}
 	
-	/**Attaches a header [fileid ,index of packet data in original file].
+	/**Attaches a header [fileid ,sequence number of packet data in original file].
 	*
 	*@return byte[] byte array with the header attached to data.
 	*
 	*@param  byte[]	data	data to attach header to.
-	*@param  int 	index	index is position of data in original file.
+	*@param  int 	seqno	seqno is position of data in original file.
 	*/
-	public byte[] attachHeader(byte[] data,int index){
+	public byte[] attachDataHeader(byte[] data,int seqno){
 		byte[] output={0};
 		try(ByteArrayOutputStream bos = new ByteArrayOutputStream()){
 			try(DataOutputStream out = new DataOutputStream(bos)){
+				out.writeInt(DATA_PACKET); // protocol code for data packets.
 				out.writeInt(fileid);
-				out.writeInt(index);
+				out.writeInt(seqno);
 				out.write(data,0,data.length);
 			}catch(IOException e){
 				e.printStackTrace();
@@ -74,90 +74,69 @@ public class FileSender{
 		return output;
 	}
 	
-	/**Sends packets
+	/**Sends a packet
+	*@param	int	seqno	sequence number of packet.
+	*/
+	public void sendPacket(int seqno){
+		//read data from file to send.
+		byte[] data;
+		if((seqno+1)*packetsize<=filesize)
+			data = new byte[packetsize];
+		else
+			data = new byte[filesize-seqno*packetsize];
+		try{
+			file.seek(seqno*packetsize);
+			file.read(data);
+			//send packets.
+			byte[] pdata = attachDataHeader(data,seqno);
+			System.out.println("sending packets at sequence number:"+seqno);
+			DatagramPacket dp = new DatagramPacket(pdata,pdata.length,remote);
+			try{
+				socket.send(dp);
+			}catch(IOException e){
+				e.printStackTrace();
+			}finally{}
+		}catch(IOException ex){
+			ex.printStackTrace();
+		}
+	}
+	
+	/**Sends packets as requested by client.
 	*@return Thread thread which sends data as packets through socket.
 	*/
 	public Thread sendPackets(){
 		Thread t = new Thread(){
 			public void run(){
-				lock.readLock().lock();
-				while(toSend.size()>0){
-					lock.readLock().unlock();
-					boolean istosend = false;
-					int index = -1;
-					//check if the given index is acknowledged by client.
-					lock.readLock().lock();
-					istosend = !acknowledged.get(toSend.peek());
-					lock.readLock().unlock();
-					// if not acknowledged then send packet.
-					if(istosend && index>-1){
-						//deque head and enqueue it to back.
-						lock.writeLock().lock();
-						index = toSend.remove();
-						toSend.add(index);
-						lock.writeLock().unlock();
-						//read data from file to send.
-						byte[] data = new byte[packetsize];
-						try{
-							file.seek(index*packetsize);
-							file.read(data);
-							//send packets.
-							byte[] pdata = attachHeader(data,index);
-							//System.out.println(index+":"+new String(data));
-							DatagramPacket dp = new DatagramPacket(pdata,pdata.length,remote);
-							try{
-								socket.send(dp);
-							}catch(IOException e){
-								e.printStackTrace();
-							}finally{}
-						}catch(IOException ex){
-							ex.printStackTrace();
-						}finally{}
-					}
-					lock.readLock().lock();
-				}
-				lock.readLock().unlock();
-			}
-		};
-		t.start();
-		return t;
-	}
-	
-	/**receives acknowlegment from receiver.
-	*@return Thread thread receive acknowlegment through socket.
-	*/
-	public Thread receiveAcknowledgement(){
-		Thread t = new Thread(){
-			public void run(){
-				lock.readLock().lock();
-				while(toSend.size()>0){
-					lock.readLock().unlock();
-					byte[] data = new byte[1001*Integer.BYTES];
+				boolean run = true;
+				while(run){
+					byte[] data = new byte[3*Integer.BYTES];
 					DatagramPacket dp = new DatagramPacket(data,data.length);
 					try{
 						socket.receive(dp);
-						if(dp.getSocketAddress()!=rem)
-							continue;
+						System.out.println("Something received from "+dp.getSocketAddress());
+						//if(!dp.getSocketAddress().equals(remote))
+						//	continue;
 						DataInputStream in = new DataInputStream(new ByteArrayInputStream(dp.getData(),dp.getOffset(),dp.getLength()));
 						try{
-							int fid = in.readInt();
-							if(fid == fileid){
-								for(int i = 0;i<1000;i++){
-									int ind = in.readInt();
-									lock.readLock().lock();
-									acknowledged.set(ind);
-									lock.readLock().unlock();
-								}
+							int pcode = in.readInt();// protocol code
+							int fid = in.readInt();  // file id
+							if(pcode == STOP){
+								run = false;
+								file.close();
+								break;
+							}
+							int sqn = in.readInt();	 // sequence number
+							System.out.println("pcode:"+pcode+" fid:"+fid+" sqn:"+sqn+"Math.ceil(filesize/packetsize):"+Math.ceil((double)filesize/packetsize));
+							if(pcode == PACKET_REQUEST && fid == fileid && sqn>=0 && sqn<Math.ceil((double)filesize/packetsize)){
+								sendPacket(sqn);
 							}
 						}catch(IOException e){
 							e.printStackTrace();
 						}finally{}
 					}catch(IOException ex){
-						ex.printStackTrace();
+							ex.printStackTrace();
 					}finally{}
-					lock.readLock().lock();
 				}
-				lock.readLock().unlock();
 			}
 		};
 		t.start();
@@ -165,5 +144,26 @@ public class FileSender{
 	}
 	
 	public static void main(String[] args){
+		try{
+			InetAddress myip = InetAddress.getLocalHost();
+			DatagramSocket soc = new DatagramSocket(2023,myip);
+			soc.setSoTimeout(10000);
+			System.out.println("Server address: "+soc.getLocalSocketAddress());
+			BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+			String caddr = br.readLine();
+			int cport = Integer.parseInt(br.readLine());
+			SocketAddress client = new InetSocketAddress(caddr,cport);
+			String filename = "data.txt";
+			int fileid = 1;
+			FileSender fs = new FileSender(soc,client,filename,fileid);
+			System.out.println("Client address: "+client);
+			Thread fst = fs.sendPackets();
+			try{
+				fst.join();
+			}catch(InterruptedException e){
+			}
+			soc.close();
+		}catch(IOException e){
+		}
 	}
 }
