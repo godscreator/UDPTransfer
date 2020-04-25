@@ -134,7 +134,7 @@ public class FileReceiver{
 				//file close
 				try{
 					file.close();
-					socket.close();
+					//socket.close();
 				}catch(IOException e){
 					e.printStackTrace();
 				}

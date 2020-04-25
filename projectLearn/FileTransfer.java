@@ -19,7 +19,7 @@ import projectLearn.FileInfo;
 /*Request types
 * 1> addfile fileid filename [filepath]
 * 2> removefile filename
-* 3> download clientaddress clientport fileid filename filesize
+* 3> download clientaddress clientport clientsenderport fileid filename filesize
 * 4> getshared clientaddress clientport	
 * 5> exit	
 */
@@ -29,6 +29,7 @@ public class FileTransfer
 	DatagramSocket Receiversocket;
 	DatagramSocket socket;
 	Hashtable<String,FileInfo> filelist; // key : filename , value: file info(file id, file size, file path)
+	Hashtable<Integer,File> files;//key: file id, value: file
 	
 	ExecutorService service;
 	ReentrantReadWriteLock rwl;
@@ -38,7 +39,7 @@ public class FileTransfer
 	final static String REQUEST_TYPES = "Request types	"+
 	"\n1> addfile fileid filename [filepath]"+
 	"\n2> removefile filename"+
-	"\n3> download clientaddress clientport fileid filename filesize"+
+	"\n3> download clientaddress clientport clientsenderport fileid filename filesize"+
 	"\n4> getshared clientaddress clientport"+
 	"\n5> exit";
 	
@@ -54,6 +55,12 @@ public class FileTransfer
 		service = Executors.newFixedThreadPool(10);
 		rwl = new ReentrantReadWriteLock();
 		serverStatus = false;
+	}
+	
+	/** update index files.
+	*/
+	public void updateIndex(){
+		
 	}
 	
 	/** thread for sending file
