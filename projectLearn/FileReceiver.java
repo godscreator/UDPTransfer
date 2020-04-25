@@ -1,4 +1,5 @@
 package projectLearn;
+import java.lang.Math;
 import java.io.*;
 import java.net.*;
 import java.util.BitSet;
@@ -8,11 +9,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.SynchronousQueue;
 
 /*Protcol codes( first integer of the packet.) [code , info]
-*	Value		Format(info)						Type
-* 		0 		-									-
-*		1 		[file id,seq. no.]					request of file data packet
-*		2		[file id,seq. no.,data]				to receive data packet.
-*		3		[file id]							stop file id.					
+*	Value		Format(info)							Type
+* 		0 		[file id,string filename size,filename]	request file with filename and id.	
+*		1 		[file id,seq. no.]						request of file data packet
+*		2		[file id,seq. no.,datasize,data]		to receive data packet.
+*		3		[file id]								stop file id.					
 */
 
 public class FileReceiver{
@@ -22,7 +23,6 @@ public class FileReceiver{
 	private int fileid;	  			//	id of file to send(This will indicate to client the file to which data beints).
 	private int filesize;	  		//	file size in terms of sequence numbers.
 	private SocketAddress remote;	//	remote address to send file with.
-	
 	private Queue<Integer> received;//	Queue to store sequence numbers of packets received.
 	private BitSet acknowledged;// set of sequence number of received packets.
 	private RandomAccessFile file;	//	file to be received.
@@ -82,10 +82,10 @@ public class FileReceiver{
 		Thread t = new Thread(){
 			public void run(){
 				//send request for data
-				for(int i=0;i<filesize;i++){
+				for(int i=0;i<Math.ceil((double)filesize/packetsize);i++){
 					while(true){
 						sendDataRequest(i);
-						byte[] pdata = new byte[8192];
+						byte[] pdata = new byte[packetsize+100];
 						DatagramPacket dp = new DatagramPacket(pdata,pdata.length);
 						try{
 							socket.receive(dp);
@@ -95,10 +95,11 @@ public class FileReceiver{
 									int pcode = in.readInt();
 									int fid = in.readInt();
 									int seqno = in.readInt();
-									byte[] data = new byte[8000];
+									int dlen = in.readInt();
+									byte[] data = new byte[dlen];
 									in.read(data);
-									file.seek(seqno*8000);
-									file.write(data,0,dp.getLength()-3*Integer.BYTES);
+									file.seek(seqno*packetsize);
+									file.write(data,0,dlen);
 									System.out.println("received sequence number: "+seqno);
 									break;
 								}catch(IOException e){
@@ -133,12 +134,12 @@ public class FileReceiver{
 				//file close
 				try{
 					file.close();
+					socket.close();
 				}catch(IOException e){
 					e.printStackTrace();
 				}
 			}
 		};
-		t.start();
 		return t;
 	}
 	
@@ -178,18 +179,20 @@ public class FileReceiver{
 			String saddr = br.readLine();
 			int sport = Integer.parseInt(br.readLine());
 			SocketAddress server = new InetSocketAddress(saddr,sport);
-			String filename = "data2.txt";
+			String filename = br.readLine();
 			int fileid = 1;
 			int fsize = Integer.parseInt(br.readLine());
 			FileReceiver fs = new FileReceiver(soc,server,filename,fileid,fsize);
 			System.out.println("Server address: "+server);
 			Thread fst = fs.receiveDataPackets();
+			fst.start();
 			try{
 				fst.join();
 			}catch(InterruptedException e){
 			}
 			soc.close();
 		}catch(IOException e){
+			e.printStackTrace();
 		}
 	}
 }

@@ -8,11 +8,11 @@ import java.util.Queue;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /*Protcol codes( first integer of the packet.) [code , info]
-*	Value		Format(info)						Type
-* 		0 		-									-
-*		1 		[file id,seq. no.]					request of file data packet
-*		2		[file id,seq. no.,data]				to send data packet.
-*		3		[file id]							stop file id.					
+*	Value		Format(info)							Type
+* 		0 		[file id,string filename size,filename]	request file with filename and id.	
+*		1 		[file id,seq. no.]						request of file data packet
+*		2		[file id,seq. no.,datasize,data]		to send data packet.
+*		3		[file id]								stop file id.					
 */
 
 public class FileSender{
@@ -63,6 +63,7 @@ public class FileSender{
 				out.writeInt(DATA_PACKET); // protocol code for data packets.
 				out.writeInt(fileid);
 				out.writeInt(seqno);
+				out.writeInt(data.length);
 				out.write(data,0,data.length);
 			}catch(IOException e){
 				e.printStackTrace();
@@ -79,11 +80,13 @@ public class FileSender{
 	*/
 	public void sendPacket(int seqno){
 		//read data from file to send.
-		byte[] data;
+		byte[] data = new byte[packetsize];
+		/*
 		if((seqno+1)*packetsize<=filesize)
 			data = new byte[packetsize];
 		else
 			data = new byte[filesize-seqno*packetsize];
+		*/
 		try{
 			file.seek(seqno*packetsize);
 			file.read(data);
@@ -107,8 +110,11 @@ public class FileSender{
 	public Thread sendPackets(){
 		Thread t = new Thread(){
 			public void run(){
-				boolean run = true;
-				while(run){
+				final int MAX_TRIES = 20;
+				int tries = MAX_TRIES;
+				while(tries>0){
+					//if (Thread.currentThread().isInterrupted()) break;
+					System.out.println("Tries:"+tries);
 					byte[] data = new byte[3*Integer.BYTES];
 					DatagramPacket dp = new DatagramPacket(data,data.length);
 					try{
@@ -121,7 +127,7 @@ public class FileSender{
 							int pcode = in.readInt();// protocol code
 							int fid = in.readInt();  // file id
 							if(pcode == STOP){
-								run = false;
+								tries = 0;
 								file.close();
 								break;
 							}
@@ -129,17 +135,19 @@ public class FileSender{
 							System.out.println("pcode:"+pcode+" fid:"+fid+" sqn:"+sqn+"Math.ceil(filesize/packetsize):"+Math.ceil((double)filesize/packetsize));
 							if(pcode == PACKET_REQUEST && fid == fileid && sqn>=0 && sqn<Math.ceil((double)filesize/packetsize)){
 								sendPacket(sqn);
+								tries = MAX_TRIES;
 							}
 						}catch(IOException e){
 							e.printStackTrace();
+							tries--;
 						}finally{}
 					}catch(IOException ex){
 							ex.printStackTrace();
+							tries--;
 					}finally{}
 				}
 			}
 		};
-		t.start();
 		return t;
 	}
 	
@@ -153,11 +161,12 @@ public class FileSender{
 			String caddr = br.readLine();
 			int cport = Integer.parseInt(br.readLine());
 			SocketAddress client = new InetSocketAddress(caddr,cport);
-			String filename = "data.txt";
+			String filename = br.readLine();
 			int fileid = 1;
 			FileSender fs = new FileSender(soc,client,filename,fileid);
 			System.out.println("Client address: "+client);
 			Thread fst = fs.sendPackets();
+			fst.start();
 			try{
 				fst.join();
 			}catch(InterruptedException e){
